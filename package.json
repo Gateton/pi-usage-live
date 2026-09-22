@@ -1,6 +1,6 @@
 {
   "name": "pi-usage-live",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Always-on subscription usage for Pi: Claude, Codex, DeepSeek, Kimi, MiniMax, Moonshot, Z.AI, OpenRouter and more, live in your terminal as you work.",
   "keywords": [
     "pi",
