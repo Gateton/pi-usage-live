@@ -1,7 +1,7 @@
 {
-  "name": "pi-subscription-usage",
+  "name": "pi-usage-live",
   "version": "0.1.0",
-  "description": "Always-on subscription usage card for pi: see how much of your Claude, ChatGPT Codex, OpenCode Zen, OpenRouter and other plan allowances you have left, without asking.",
+  "description": "Always-on subscription usage card for Pi: see how much of your Claude, ChatGPT Codex, OpenCode Zen and OpenRouter allowance you have left, live in your terminal, without asking.",
   "keywords": [
     "pi",
     "pi-extension",
@@ -21,7 +21,9 @@
     "node": ">=22"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "files": [
     "src",
@@ -41,10 +43,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage.git"
+    "url": "git+https://github.com/Gateton/pi-usage-live.git"
   },
   "bugs": {
-    "url": "https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage/issues"
+    "url": "https://github.com/Gateton/pi-usage-live/issues"
   },
-  "homepage": "https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage#readme"
+  "homepage": "https://github.com/Gateton/pi-usage-live#readme"
 }

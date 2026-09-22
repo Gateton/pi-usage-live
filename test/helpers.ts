@@ -82,4 +82,12 @@ export function credential(): { headers: Record<string, string>; secrets: string
   return { headers: { Authorization: "Bearer test-token" }, secrets: ["test-token"] };
 }
 
+/**
+ * The credential the core builds for authStyle "raw": the bare key, no "Bearer "
+ * prefix, which is what providers like Z.AI's monitor expect.
+ */
+export function rawCredential(): { headers: Record<string, string>; secrets: string[] } {
+  return { headers: { Authorization: "test-token" }, secrets: ["test-token"] };
+}
+
 export const noAbort = { signal: new AbortController().signal } as { signal: AbortSignal };

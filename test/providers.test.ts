@@ -31,7 +31,20 @@ afterEach(() => {
 
 describe("registry", () => {
   test("exposes the expected adapters", () => {
-    assert.deepEqual([...adapterIds()].sort(), ["anthropic", "openai-codex", "opencode-go", "openrouter"]);
+    assert.deepEqual([...adapterIds()].sort(), [
+      "anthropic",
+      "deepseek",
+      "kimi-coding",
+      "minimax",
+      "minimax-cn",
+      "moonshotai",
+      "moonshotai-cn",
+      "openai-codex",
+      "opencode-go",
+      "openrouter",
+      "zai",
+      "zai-coding-cn",
+    ]);
   });
 
   test("every adapter declares the fields the core relies on", () => {

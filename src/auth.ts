@@ -112,8 +112,8 @@ export async function resolveCredential(
   if (adapter.authStyle === "raw") {
     const token = bearerFrom(auth);
     if (!token) return { ok: false, configured: false, reason: "no credential" };
-    // Some monitor APIs want the bare key and reject a Bearer prefix.
-    return { ok: true, credential: { headers: {}, secrets: [...secrets, token] } };
+    // Bare key, no "Bearer " prefix: some monitor APIs reject the prefix.
+    return { ok: true, credential: { headers: { Authorization: token }, secrets: [...secrets, token] } };
   }
 
   const token = bearerFrom(auth);

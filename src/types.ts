@@ -75,7 +75,11 @@ export interface ProviderSnapshot {
 export type AuthStyle =
   /** `Authorization: Bearer <resolved inference credential>`. */
   | "bearer"
-  /** The raw credential, with no Authorization header (some monitor APIs). */
+  /**
+   * `Authorization: <credential>`, with no Bearer prefix. Some providers' monitor
+   * APIs reject the prefix outright (Z.AI's quota endpoint is the known case), so the
+   * distinction is the prefix, not the presence of the header.
+   */
   | "raw"
   /**
    * Requires the long-lived OAuth credential the runtime inference token was
