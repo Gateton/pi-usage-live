@@ -1,11 +1,22 @@
 name: Publish
 
-# Publishing is tag-driven: pushing v0.1.0 publishes version 0.1.0. The job refuses
-# to publish when the tag and package.json disagree, so the registry can never end up
-# with a version that does not match the commit it came from.
+# Manual only, on purpose.
+#
+# This workflow used to fire on any `v*` tag. That conflicts with publishing by hand:
+# pushing a tag would start a second publish attempt that fails for want of an
+# NPM_TOKEN secret, leaving a red run on the repo. Releasing is a deliberate act, so
+# it is triggered deliberately.
+#
+# To make tags publish automatically later, configure npm trusted publishing (OIDC)
+# for this repository and workflow at
+# https://www.npmjs.com/package/pi-usage-live/access, then add back:
+#
+#   on:
+#     push:
+#       tags: ["v*"]
+#
+# With OIDC there is no token to store, and `--provenance` becomes verifiable.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -34,16 +45,14 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Check tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Check the version is not already published
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "Tag v$tag does not match package.json version $pkg" >&2
+          if npm view "pi-usage-live@$pkg" version >/dev/null 2>&1; then
+            echo "pi-usage-live@$pkg is already published; bump the version first." >&2
             exit 1
           fi
-          echo "Tag v$tag matches package.json."
+          echo "pi-usage-live@$pkg is not yet published."
 
       - name: Guard against publishing placeholders
         run: |
