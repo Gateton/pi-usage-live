@@ -45,7 +45,7 @@ pi -e npm:pi-subscription-usage
 
 | Provider | Data | How it is obtained |
 |---|---|---|
-| **Anthropic (Claude Max/Pro)** | 5h and 7d windows | Passive — parsed from real response headers |
+| **Anthropic (Claude Max/Pro)** | 5h and 7d windows, plus model-specific weekly windows when the plan has them | Passive **and** active |
 | **OpenAI Codex (ChatGPT)** | 5h and 7d windows, plan | Active poll |
 | **OpenCode Go (Zen)** | rolling, weekly, monthly | Active poll |
 | **OpenRouter** | per-key credit limit and spend | Active poll |
@@ -54,8 +54,23 @@ A provider you have not logged into is simply not shown. Nothing appears as a
 permanent error for a provider you do not use.
 
 **Passive** means the provider reports quota in the headers of responses you were
-already making, so the card updates as you work and costs zero extra requests. Only
-providers that expose no such headers are polled.
+already making, so the card updates as you work and costs zero extra requests.
+**Active** means polling the provider's documented usage endpoint.
+
+Anthropic supports both, deliberately:
+
+- Passive capture keeps the numbers live while you are working in Claude, for free.
+- The active poll is what keeps Claude current while you work in *another* provider,
+  and it is the only source that reports the provider's own severity rating — the
+  difference between a window that is merely high and one that is actually blocking
+  you.
+
+When both sources have data for one provider they are **merged** by window and metric
+label, with the fresher value winning. Otherwise the sparse passive update would
+erase windows that only the poll knows about.
+
+> Anthropic's usage endpoint requires a subscription login. An API key is rejected
+> by that endpoint, so an API-key account falls back to passive capture alone.
 
 > Only the four providers above are currently implemented, and each was verified
 > against a live account. Adding another is a single file — see
@@ -183,12 +198,17 @@ and updates as the user works. `src/providers/anthropic.ts` is the reference.
 ## Development
 
 ```bash
+npm install
+npm run typecheck
 npm test
 ```
 
-The suite runs on plain Node with no test dependencies. It resolves TypeScript's
-`.js`-style relative imports through a small hook in `test/` so that
+The test suite runs on plain Node with no test dependencies. It resolves
+TypeScript's `.js`-style relative imports through a small hook in `test/` so that
 `npm test` works immediately after a clone.
+
+CI runs typecheck and tests on every push and pull request
+(`.github/workflows/ci.yml`). Nothing reaches `main` unverified.
 
 ## Design notes
 
@@ -215,6 +235,15 @@ The suite runs on plain Node with no test dependencies. It resolves TypeScript's
 - Credentials are never logged, cached, or written to the session.
 - Like every pi extension, this package runs with your user's privileges. Read the
   source before installing anything that does.
+
+## Releasing
+
+Publishing is tag-driven and refuses to ship a mismatch:
+
+```bash
+npm version patch          # or minor / major
+git push --follow-tags
+```
 
 ## License
 

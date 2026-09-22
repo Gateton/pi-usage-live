@@ -79,6 +79,71 @@ describe("UsageState", () => {
   });
 });
 
+describe("merging two sources for one provider", () => {
+  test("a sparse update does not drop windows only the richer source knew about", async () => {
+    const state = newState();
+
+    // The active poll knows about a model-specific weekly window...
+    await state.ingest(
+      snapshot({
+        providerId: "claude",
+        configured: true,
+        windows: [
+          { label: "5h", usedPercent: 10 },
+          { label: "7d sonnet", usedPercent: 3 },
+        ],
+      }),
+    );
+
+    // ...and then a passive header capture arrives with only the two primary windows.
+    await state.ingest(
+      snapshot({
+        providerId: "claude",
+        configured: true,
+        windows: [{ label: "5h", usedPercent: 11 }],
+      }),
+    );
+
+    const windows = state.visibleSnapshots()[0]?.windows ?? [];
+    assert.deepEqual(windows.map((window) => window.label), ["5h", "7d sonnet"]);
+    assert.equal(windows[0]?.usedPercent, 11, "the fresher value should win");
+    assert.equal(windows[1]?.usedPercent, 3, "the carried-over window should survive");
+  });
+
+  test("merges metrics the same way", async () => {
+    const state = newState();
+    await state.ingest(
+      snapshot({ providerId: "p", configured: true, metrics: [{ label: "Plan", value: "plus" }] }),
+    );
+    await state.ingest(snapshot({ providerId: "p", configured: true, metrics: [] }));
+
+    assert.deepEqual(state.visibleSnapshots()[0]?.metrics, [{ label: "Plan", value: "plus" }]);
+  });
+
+  test("an error replaces outright rather than merging over stale numbers", async () => {
+    const state = newState();
+    await state.ingest(snapshot({ providerId: "p", configured: true, windows: [{ label: "5h", usedPercent: 40 }] }));
+    await state.ingest(
+      snapshot({ providerId: "p", configured: true, status: "unavailable", reason: "token expired", windows: [] }),
+    );
+
+    const entry = state.visibleSnapshots()[0];
+    assert.equal(entry?.status, "unavailable");
+    assert.equal(entry?.reason, "token expired");
+    assert.deepEqual(entry?.windows, [], "stale windows must not survive an error");
+  });
+
+  test("a recovery replaces the error rather than merging into it", async () => {
+    const state = newState();
+    await state.ingest(snapshot({ providerId: "p", configured: true, status: "unavailable", reason: "boom" }));
+    await state.ingest(snapshot({ providerId: "p", configured: true, windows: [{ label: "5h", usedPercent: 7 }] }));
+
+    const entry = state.visibleSnapshots()[0];
+    assert.equal(entry?.status, "ok");
+    assert.equal(entry?.windows.length, 1);
+  });
+});
+
 describe("UsageState.render", () => {
   test("draws the card when there is something to show", async () => {
     const state = newState();

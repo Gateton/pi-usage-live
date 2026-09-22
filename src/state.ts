@@ -9,6 +9,36 @@ import type { ProviderSnapshot } from "./types.js";
 
 export const WIDGET_ID = "subscription-usage";
 
+/**
+ * Union two lists by their `label`: the fresher entry wins, and entries only the
+ * older list has are carried over.
+ */
+function unionByLabel<T extends { label: string }>(previous: readonly T[], next: readonly T[]): T[] {
+  const freshLabels = new Set(next.map((entry) => entry.label));
+  return [...next, ...previous.filter((entry) => !freshLabels.has(entry.label))];
+}
+
+/**
+ * Merge a fresher snapshot over the stored one.
+ *
+ * Two independent sources can feed one provider: an active poll (complete, every few
+ * minutes) and passive capture (free, on every request, but sparse). Letting the
+ * sparse source replace the complete one would drop data only the poll knows about —
+ * for example Claude's model-specific weekly windows. So windows and metrics are
+ * unioned by label, with the fresher value winning.
+ *
+ * Anything other than two healthy snapshots replaces outright: an error has to clear
+ * stale numbers, and there is nothing to merge from an unavailable snapshot.
+ */
+export function mergeSnapshots(previous: ProviderSnapshot, next: ProviderSnapshot): ProviderSnapshot {
+  if (previous.status !== "ok" || next.status !== "ok") return next;
+  return {
+    ...next,
+    windows: unionByLabel(previous.windows, next.windows),
+    metrics: unionByLabel(previous.metrics, next.metrics),
+  };
+}
+
 export class UsageState {
   private snapshots = new Map<string, ProviderSnapshot>();
   private everConfigured = new Set<string>();
@@ -56,8 +86,11 @@ export class UsageState {
     if (snapshot.configured) this.everConfigured.add(snapshot.providerId);
     if (!snapshot.configured && !this.everConfigured.has(snapshot.providerId)) return;
 
-    this.snapshots.set(snapshot.providerId, snapshot);
-    await persistSnapshot(this.agentDir, snapshot);
+    const previous = this.snapshots.get(snapshot.providerId);
+    const merged = previous ? mergeSnapshots(previous, snapshot) : snapshot;
+
+    this.snapshots.set(snapshot.providerId, merged);
+    await persistSnapshot(this.agentDir, merged);
   }
 
   /** Snapshots after applying the user's enable/disable lists. */
