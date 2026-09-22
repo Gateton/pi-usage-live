@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/usage-live.png" alt="A Pi session with pi-usage-live's usage card docked in the bottom-right corner, showing OpenCode Go's rolling, weekly and monthly quota windows with their reset countdowns" width="880">
+  <img src="https://raw.githubusercontent.com/Gateton/pi-usage-live/main/assets/usage-live.png" alt="A Pi session with pi-usage-live's usage card docked in the bottom-right corner, showing OpenCode Go's rolling, weekly and monthly quota windows with their reset countdowns" width="880">
 
 # pi-usage-live
 
@@ -18,7 +18,7 @@ Claude, ChatGPT Codex, OpenCode Zen, DeepSeek, Kimi, MiniMax, Moonshot, Z.AI and
 
 `pi-usage-live` adds a usage card to Pi that is simply *there*. No command to remember, no dashboard to open: the card docks in the corner, follows the model you are actually using, and keeps itself current while you work.
 
-<img src="assets/usage-card.png" alt="Close-up of the usage card: a bordered panel titled OC Go, with three labelled rows — rolling at 2%, wk at 13% and mo at 49% — each drawn as a bar with its percentage and reset countdown right-aligned" width="700">
+<img src="https://raw.githubusercontent.com/Gateton/pi-usage-live/main/assets/usage-card.png" alt="Close-up of the usage card: a bordered panel titled OC Go, with three labelled rows — rolling at 2%, wk at 13% and mo at 49% — each drawn as a bar with its percentage and reset countdown right-aligned" width="700">
 
 ## Highlights
 
@@ -57,6 +57,10 @@ Then just work. A provider you have not logged into is never shown — there is 
    ```text
    /usage all
    ```
+
+   <img src="https://raw.githubusercontent.com/Gateton/pi-usage-live/main/assets/usage-all.png" alt="The usage card expanded with /usage all: three stacked panels — Claude at 100% for its 5-hour window and 8% weekly, Codex at 17% and 3% with its plus plan, and OC Go at 3%, 14% and 49%. Claude's exhausted window is drawn in the theme's error colour." width="620">
+
+   Every provider you have credentials for, each with its own windows, percentages and reset countdowns. Claude's exhausted 5-hour window is drawn in the theme's error colour, so a blocking limit is visible without reading the number.
 
 4. **Hide it when you want the space back.** The choice is remembered across restarts:
 
