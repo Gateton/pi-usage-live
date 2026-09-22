@@ -1,77 +1,126 @@
-// Shared, minimal-but-safe authenticated JSON fetch for the active pollers
-// (openai-codex, opencode-go, openrouter). Mirrors the safety properties of
-// @narumitw/pi-usage's fetchProviderJson without reimplementing its full
-// fingerprinting/redaction machinery, which this personal-use widget doesn't need:
-//   - only ever call the provider's one official origin
-//   - reject redirects
-//   - bound response size
-//   - timeout via AbortSignal
-//   - never log the resolved secret
+// The one HTTP path every active adapter uses.
+//
+// Safety properties, kept in one place so no adapter has to remember them:
+//   - redirects are refused (a redirect could move a credential to another host)
+//   - the response body is size-bounded (a hostile or broken endpoint must not
+//     exhaust memory)
+//   - the request times out and honours the session's abort signal
+//   - failures never carry the credential: callers pass `secrets` to scrub, and
+//     this module only ever reports status codes and provider-supplied text
+//   - a User-Agent identifies us, so providers can see who is calling
 
 const MAX_BODY_BYTES = 64 * 1024;
+const DEFAULT_TIMEOUT_MS = 8_000;
 
 export class UsageFetchError extends Error {}
 
-export async function fetchAuthedJson(
-  url: string,
-  bearerToken: string,
-  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
-): Promise<unknown> {
-  const timeoutMs = opts.timeoutMs ?? 8000;
+/** Remove any resolved secret from a message before it can reach a UI or a log. */
+export function redact(message: string, secrets: readonly string[]): string {
+  let out = message;
+  for (const secret of secrets) {
+    if (secret.length >= 8) out = out.split(secret).join("<redacted>");
+  }
+  return out;
+}
+
+export interface FetchJsonOptions {
+  headers: Record<string, string>;
+  /** Values to scrub from error messages. */
+  secrets?: readonly string[];
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Human-readable endpoint name used in error messages. */
+  label: string;
+}
+
+export async function fetchJson(url: string, options: FetchJsonOptions): Promise<unknown> {
+  const { headers, secrets = [], label } = options;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  if (opts.signal) {
-    if (opts.signal.aborted) controller.abort();
-    else opts.signal.addEventListener("abort", onAbort, { once: true });
+  const abortFromCaller = () => controller.abort();
+  if (options.signal) {
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener("abort", abortFromCaller, { once: true });
   }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${bearerToken}`,
-        "User-Agent": "pi-subscription-usage",
-      },
+      headers: { "User-Agent": "pi-subscription-usage", ...headers },
       redirect: "error",
       signal: controller.signal,
     });
+
     if (response.redirected) {
-      throw new UsageFetchError("refused a redirected response");
+      throw new UsageFetchError(`${label} refused a redirected response`);
     }
-    const reader = response.body?.getReader();
-    let text = "";
-    if (reader) {
-      let total = 0;
-      const decoder = new TextDecoder();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > MAX_BODY_BYTES) {
-          await reader.cancel();
-          throw new UsageFetchError("response exceeded size bound");
-        }
-        text += decoder.decode(value, { stream: true });
-      }
-    } else {
-      text = await response.text();
-    }
+
+    const text = await readBounded(response);
     if (!response.ok) {
-      throw new UsageFetchError(`HTTP ${response.status} ${response.statusText}`);
+      throw new UsageFetchError(`${label} returned HTTP ${response.status} ${response.statusText}`);
     }
+
     try {
       return JSON.parse(text);
     } catch {
-      throw new UsageFetchError("response was not valid JSON");
+      throw new UsageFetchError(`${label} returned invalid JSON`);
     }
-  } catch (err) {
-    if (err instanceof UsageFetchError) throw err;
-    if ((err as { name?: string })?.name === "AbortError") {
-      throw new UsageFetchError(`timed out after ${timeoutMs}ms`);
+  } catch (error) {
+    if (error instanceof UsageFetchError) throw new UsageFetchError(redact(error.message, secrets));
+    if ((error as { name?: string })?.name === "AbortError") {
+      if (options.signal?.aborted) throw new UsageFetchError(`${label} was cancelled`);
+      throw new UsageFetchError(`${label} timed out after ${timeoutMs}ms`);
     }
-    throw new UsageFetchError(err instanceof Error ? err.message : String(err));
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UsageFetchError(redact(`${label} failed: ${message}`, secrets));
   } finally {
     clearTimeout(timer);
-    if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+async function readBounded(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return response.text();
+
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new UsageFetchError("response exceeded the size bound");
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text;
+}
+
+/** Narrow an unknown JSON value to an object, or undefined. */
+export function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+/** Read a finite number, accepting numeric strings. */
+export function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+export function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+export function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value));
 }

@@ -1,22 +1,23 @@
-// Active-poll orchestration for openai-codex / opencode-go / openrouter.
-// Self-scheduling refresh (setTimeout recursion, not setInterval) so a slow or
-// failing provider can't cause overlapping requests: normal cadence is 5 minutes,
-// but any *real* failure (not just "not configured") backs off to a 30s retry —
-// same policy @narumitw/pi-usage uses for Z.AI.
+// Active polling across every adapter that exposes a usage endpoint.
+//
+// Self-scheduling (setTimeout recursion rather than setInterval) so a slow provider
+// cannot cause overlapping requests: the cadence comes from config, and any real
+// failure backs off to a short retry.
 //
 // Lifecycle safety: a poll in flight when the session ends (shutdown, /new,
-// /reload, /resume) must NOT touch its captured ctx afterwards. Pi invalidates a
-// ctx on session replacement and *any* property read then throws. Because this
-// class owns timers, an escaping throw would become an unhandled rejection and
-// take down the whole pi process — so every entry point here is guarded.
+// /reload, /resume) must never touch its captured ctx afterwards. Pi invalidates a
+// ctx on session replacement and *any* property read then throws. Because this class
+// owns timers, an escaping throw would become an unhandled rejection and take down
+// the whole pi process, so every entry point here is guarded.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { fetchOpenaiCodexSnapshot } from "./providers/openai-codex.js";
-import { fetchOpenCodeGoSnapshot } from "./providers/opencode-go.js";
-import { fetchOpenRouterSnapshot } from "./providers/openrouter.js";
+import { resolveCredential } from "./auth.js";
+import { getAdapter, pollableAdapters } from "./providers/index.js";
 import type { UsageState } from "./state.js";
+import type { ProviderSnapshot } from "./types.js";
 
-const NORMAL_INTERVAL_MS = 5 * 60_000;
 const BACKOFF_INTERVAL_MS = 30_000;
+/** Never let a single provider's request outlive this, whatever the poll interval. */
+const MAX_QUERY_MS = 10_000;
 
 export class ActivePoller {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,7 +41,7 @@ export class ActivePoller {
     this.timer = undefined;
   }
 
-  /** Force an out-of-band refresh now (used by model_select and /usage refresh). */
+  /** Force an out-of-band refresh now (model_select, /usage refresh). */
   refreshNow(): void {
     if (this.stopped) return;
     this.scheduleNext(0);
@@ -50,44 +51,97 @@ export class ActivePoller {
     if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      // A poller must never be able to crash pi: swallow anything that escapes
-      // runOnce() rather than letting it surface as an unhandled rejection.
+      // A usage poller must never be able to crash pi: swallow whatever escapes
+      // runOnce() rather than letting it become an unhandled rejection.
       void this.runOnce().catch(() => {});
     }, delayMs);
   }
 
   private async runOnce(): Promise<void> {
-    // Skip (rather than queue) when a forced refresh arrived mid-flight.
+    // Skip (do not queue) when a forced refresh arrived while one was in flight.
     if (this.stopped || this.running) return;
     this.running = true;
+
+    const intervalMs = this.state.getConfig().pollIntervalSec * 1000;
     let hadRealError = false;
+
     try {
       const ctx = this.getCtx();
       if (!ctx) return;
 
-      const results = await Promise.allSettled([
-        fetchOpenaiCodexSnapshot(ctx),
-        fetchOpenCodeGoSnapshot(ctx),
-        fetchOpenRouterSnapshot(ctx),
-      ]);
+      const results = await Promise.allSettled(
+        pollableAdapters().map((adapter) => this.pollOne(ctx, adapter.id)),
+      );
 
       // The session may have ended while those requests were in flight. Their
       // results are still worth caching, but `ctx` is now invalid and rendering
       // through it would throw.
       const ctxIsLive = !this.stopped;
+
       for (const result of results) {
-        if (result.status !== "fulfilled") continue;
+        if (result.status !== "fulfilled" || result.value === undefined) {
+          hadRealError = true;
+          continue;
+        }
         const snapshot = result.value;
         await this.state.ingest(snapshot);
-        if (snapshot.status === "unavailable" && !(snapshot.reason ?? "").startsWith("no active")) {
-          hadRealError = true;
-        }
+        if (snapshot.status === "unavailable" && snapshot.configured) hadRealError = true;
       }
+
       if (ctxIsLive) this.state.render(ctx);
     } finally {
       this.running = false;
-      // scheduleNext() is a no-op once stopped, so a dead session can't reschedule.
-      this.scheduleNext(hadRealError ? BACKOFF_INTERVAL_MS : NORMAL_INTERVAL_MS);
+      // A no-op once stopped, so a dead session cannot reschedule itself.
+      this.scheduleNext(hadRealError ? BACKOFF_INTERVAL_MS : intervalMs);
     }
   }
+
+  /** Poll one adapter. Never throws: any failure becomes an unavailable snapshot. */
+  private async pollOne(ctx: ExtensionContext, providerId: string): Promise<ProviderSnapshot | undefined> {
+    const adapter = getAdapter(providerId);
+    if (!adapter?.query) return undefined;
+
+    const base = { providerId: adapter.id, displayName: adapter.displayName, capturedAt: Date.now() };
+
+    let outcome;
+    try {
+      outcome = await resolveCredential(ctx, adapter);
+    } catch (error) {
+      return unavailable(base, true, errorMessage(error));
+    }
+
+    if (!outcome.ok) return unavailable(base, outcome.configured, outcome.reason);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.min(this.state.getConfig().pollIntervalSec * 1000, MAX_QUERY_MS),
+    );
+    try {
+      const result = await adapter.query(outcome.credential, {
+        signal: controller.signal,
+        target: this.state.getConfig().targets[adapter.id],
+      });
+      if (result.status === "unavailable") return unavailable(base, result.configured, result.reason);
+      return { ...base, status: "ok", configured: true, windows: result.windows, metrics: result.metrics };
+    } catch (error) {
+      return unavailable(base, true, errorMessage(error));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+interface SnapshotBase {
+  providerId: string;
+  displayName: string;
+  capturedAt: number;
+}
+
+function unavailable(base: SnapshotBase, configured: boolean, reason: string): ProviderSnapshot {
+  return { ...base, status: "unavailable", configured, reason, windows: [], metrics: [] };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

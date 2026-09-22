@@ -1,58 +1,78 @@
-// Anthropic (Claude Max/Pro) — passive: parsed from after_provider_response headers.
-// Zero extra network calls. Confirmed against a live response on this machine:
+// Anthropic (Claude Max/Pro).
 //
-//   anthropic-ratelimit-unified-5h-utilization: "0.82"
-//   anthropic-ratelimit-unified-5h-reset: "1790115000"
-//   anthropic-ratelimit-unified-5h-status: "allowed"
+// Passive: every real inference response carries the account's unified rate-limit
+// state, so this provider costs zero extra requests. Verified against a live
+// response:
+//
+//   anthropic-ratelimit-unified-5h-utilization: "0.82"   (fraction of quota USED)
+//   anthropic-ratelimit-unified-5h-reset:       "1790115000" (unix seconds)
 //   anthropic-ratelimit-unified-7d-utilization: "0.06"
-//   anthropic-ratelimit-unified-7d-reset: "1790604000"
-//   anthropic-ratelimit-unified-7d-status: "allowed"
+//   anthropic-ratelimit-unified-7d-reset:       "1790604000"
 //
-// utilization is a 0..1 fraction of quota *used*, reset is unix seconds.
-import type { ProviderSnapshot, UsageWindow } from "../types.js";
+// Note the headers report a 0..1 fraction while the OAuth usage endpoint reports
+// 0..100. Mixing the two up silently mis-scales every bar, so each parser
+// normalises to percent at its own boundary.
+//
+// Active: Anthropic also exposes an OAuth usage endpoint that jcode uses. It is
+// not required (passive capture already covers Claude whenever Claude is in use)
+// and it is currently left unregistered, because it needs the OAuth access token
+// rather than an inference credential. See docs/providers.md.
+import type { AdapterResult, ProviderAdapter, UsageWindow } from "../types.js";
+import { clampPercent } from "../fetch-json.js";
 
 function headerValue(headers: Record<string, string> | undefined, name: string): string | undefined {
   if (!headers) return undefined;
-  // Headers arrive lower-cased in practice, but don't assume it.
-  const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
-  return key ? headers[key] : undefined;
+  // Headers arrive lower-cased in practice, but never rely on that.
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key === undefined ? undefined : headers[key];
 }
 
 function parseWindow(
   headers: Record<string, string> | undefined,
-  windowKey: "5h" | "7d",
+  key: "5h" | "7d",
   label: string,
 ): UsageWindow | undefined {
-  const utilizationRaw = headerValue(headers, `anthropic-ratelimit-unified-${windowKey}-utilization`);
-  if (utilizationRaw === undefined) return undefined;
-  const utilization = Number(utilizationRaw);
+  const utilization = Number(headerValue(headers, `anthropic-ratelimit-unified-${key}-utilization`));
   if (!Number.isFinite(utilization)) return undefined;
-  const resetRaw = headerValue(headers, `anthropic-ratelimit-unified-${windowKey}-reset`);
-  const resetsAtSec = resetRaw !== undefined ? Number(resetRaw) : undefined;
+
+  const reset = Number(headerValue(headers, `anthropic-ratelimit-unified-${key}-reset`));
   return {
     label,
-    usedPercent: Math.max(0, Math.min(100, utilization * 100)),
-    ...(Number.isFinite(resetsAtSec) ? { resetsAtSec: resetsAtSec as number } : {}),
+    usedPercent: clampPercent(utilization * 100),
+    ...(Number.isFinite(reset) ? { resetsAtSec: reset } : {}),
   };
 }
 
-/** Build a snapshot from one real Anthropic response's headers. Returns undefined if no rate-limit headers are present. */
-export function parseAnthropicHeaders(headers: Record<string, string> | undefined): ProviderSnapshot | undefined {
-  const fiveHour = parseWindow(headers, "5h", "5h");
-  const sevenDay = parseWindow(headers, "7d", "7d");
-  const windows = [fiveHour, sevenDay].filter((w): w is UsageWindow => w !== undefined);
-  if (windows.length === 0) return undefined;
+export const anthropicAdapter: ProviderAdapter = {
+  id: "anthropic",
+  displayName: "Claude",
+  officialOrigins: ["https://api.anthropic.com"],
+  authStyle: "bearer",
 
-  const status = headerValue(headers, "anthropic-ratelimit-unified-status");
-  const notes: string[] = [];
-  if (status && status !== "allowed") notes.push(`status: ${status}`);
+  fromResponseHeaders(headers): AdapterResult | undefined {
+    const windows = [
+      parseWindow(headers, "5h", "5h"),
+      parseWindow(headers, "7d", "7d"),
+    ].filter((window): window is UsageWindow => window !== undefined);
 
-  return {
-    providerId: "anthropic",
-    displayName: "Claude",
-    status: "ok",
-    windows,
-    metrics: [],
-    capturedAt: Date.now(),
-  };
-}
+    if (windows.length === 0) return undefined;
+
+    // A rejected/failed unified status means the account is being held back, so
+    // mark the window the provider names as the binding constraint. The claim uses
+    // the API's own vocabulary ("five_hour"), which must be mapped onto our labels.
+    const status = headerValue(headers, "anthropic-ratelimit-unified-status");
+    if (status && status !== "allowed") {
+      const claim = headerValue(headers, "anthropic-ratelimit-unified-representative-claim");
+      const bindingLabel = claim === "seven_day" ? "7d" : claim === "five_hour" ? "5h" : undefined;
+      return {
+        status: "ok",
+        windows: windows.map((window) =>
+          window.label === bindingLabel ? { ...window, severity: "critical" } : window,
+        ),
+        metrics: [],
+      };
+    }
+
+    return { status: "ok", windows, metrics: [] };
+  },
+};

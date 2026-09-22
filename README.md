@@ -1,120 +1,221 @@
 # pi-subscription-usage
 
-A jcode-style **always-on** live widget for Pi showing how much of your
-Claude Max/Pro, ChatGPT Codex, OpenCode Go, and OpenRouter quota you've used —
-rendered as a compact bordered HUD card anchored in the **bottom-right corner**
-of the terminal, above the editor.
+An always-on subscription usage card for [pi](https://pi.dev). See how much of your
+plan allowance you have left — at a glance, without asking.
 
 ```
-                                            ╭──────────────────────────────╮
-                                            │ Claude                       │
-                                            │ 5h  ███████████████ 100%     │
-                                            │ 7d  █░░░░░░░░░░░░░░   8%     │
-                                            ├──────────────────────────────┤
-                                            │ +3 more · /usage all         │
-                                            ╰──────────────────────────────╯
+                                    ╭──────────────────────────────────────╮
+                                    │ Claude                               │
+                                    │ 5h  ███████████████ 100% (2h53m)     │
+                                    │ 7d  █░░░░░░░░░░░░░░   8% (5d18h)     │
+                                    ╰──────────────────────────────────────╯
 ```
 
-By default it shows **only the provider backing your current model**, like
-jcode. `/usage all` expands it into a full panel with all configured providers.
+The card docks in the bottom-right corner and follows the model you are currently
+using, so it always shows the allowance that actually applies to your next request.
+`/usage all` expands it to every configured provider.
 
 ## Why
 
-Pi's built-in footer already shows token/cache/cost/context usage per session.
-What it doesn't show is **subscription-window quota** (Claude's rolling 5h/7d
-allowance, Codex's ChatGPT rate-limit windows, etc.) — the same thing `jcode
-usage` reports. This extension fills that gap as a persistent card instead
-of a one-shot command.
-
-## Visual design
-
-- Bordered box (`╭─╮ │ ╰─╯`) that reads as a HUD panel, not raw log lines.
-- 15-cell gradient bar per quota window, colored by severity from the active
-theme: **green** < 60%, **yellow** 60–84%, **red** ≥ 85%.
-- Window labels aligned per provider, so `rolling` / `wk` / `mo` bars line up.
-- Reset countdowns in human units (`3h25m`, `6d7h`), never `151h24m`.
-- Right-aligned to the terminal's bottom-right corner, with an automatic
-fallback to left alignment when the terminal is too narrow to fit the card
-plus a visible gap (a clipped card would be worse than a left-aligned one).
-- Theme-aware: colors are read live from `ctx.ui.theme` at render time, so
-switching themes in `/settings` is picked up without a reload.
-
-## How each provider updates
-
-| Provider | Mechanism | Cost |
-|---|---|---|
-| **Anthropic (Claude)** | Passive — parsed from `anthropic-ratelimit-unified-*` response headers on every real request | Free, zero extra calls |
-| **OpenAI Codex (ChatGPT)** | Active poll, `GET https://chatgpt.com/backend-api/wham/usage` | Every 5 min |
-| **OpenCode Go** | Active poll, `GET https://opencode.ai/zen/go/v1/usage` | Every 5 min |
-| **OpenRouter** | Active poll, `GET https://openrouter.ai/api/v1/key` | Every 5 min |
-
-Active pollers back off to a 30s retry on real errors (not on "provider not
-configured", which is silently skipped). All credentials are resolved through
-Pi's documented `ctx.modelRegistry.getProviderAuth(id)` API and are validated
-against each provider's one official origin before any request is sent —
-never forwarded to a custom/proxy base URL.
-
-A provider with no active credentials on this machine simply doesn't appear
-in the widget; nothing is shown as a placeholder.
+pi's built-in footer already reports token, cache, cost and context usage for the
+current session. What it does not report is **subscription-window quota**: Claude's
+rolling 5h/7d allowance, ChatGPT Codex's rate-limit windows, a Zen plan's weekly
+budget. This extension fills that gap, as a persistent card rather than a one-shot
+command.
 
 ## Install
 
-Already wired into this machine's `~/.pi/agent/settings.json` → `packages`.
-For a fresh machine:
-
-```json
-{
-  "packages": ["/path/to/pi-subscription-usage"]
-}
+```bash
+pi install npm:pi-subscription-usage
 ```
 
-or for a quick local test without installing:
+From a git checkout:
 
 ```bash
-pi -e ./src/index.ts
+pi install git:github.com/YOUR_GITHUB_USER/pi-subscription-usage
 ```
+
+Or try it without installing:
+
+```bash
+pi -e npm:pi-subscription-usage
+```
+
+## Supported providers
+
+| Provider | Data | How it is obtained |
+|---|---|---|
+| **Anthropic (Claude Max/Pro)** | 5h and 7d windows | Passive — parsed from real response headers |
+| **OpenAI Codex (ChatGPT)** | 5h and 7d windows, plan | Active poll |
+| **OpenCode Go (Zen)** | rolling, weekly, monthly | Active poll |
+| **OpenRouter** | per-key credit limit and spend | Active poll |
+
+A provider you have not logged into is simply not shown. Nothing appears as a
+permanent error for a provider you do not use.
+
+**Passive** means the provider reports quota in the headers of responses you were
+already making, so the card updates as you work and costs zero extra requests. Only
+providers that expose no such headers are polled.
+
+> Only the four providers above are currently implemented, and each was verified
+> against a live account. Adding another is a single file — see
+> [Adding a provider](#adding-a-provider).
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| `/usage` | Toggle the widget on/off |
-| `/usage show` / `/usage hide` | Explicit show / hide |
-| `/usage all` (or `expand`) | Show every configured provider at once |
-| `/usage compact` (or `collapse`) | Back to just the current model's provider |
-| `/usage align` | Flip between right-corner and left alignment |
-| `/usage align left` / `right` | Set alignment explicitly |
-| `/usage refresh` | Force an immediate refresh of the active pollers |
+| `/usage` | Toggle the card |
+| `/usage all` | Show every configured provider (not just the current model's) |
+| `/usage compact` | Back to just the current model's provider |
+| `/usage show` / `/usage hide` | Explicit show or hide |
+| `/usage align` | Flip between the right corner and left |
+| `/usage refresh` | Force an immediate poll |
+| `/usage reload` | Re-read the config file |
+
+Visibility and alignment are saved, so they survive a restart.
+
+## Configuration
+
+Optional. `~/.pi/agent/pi-subscription-usage.json`:
+
+```json
+{
+  "align": "right",
+  "visible": true,
+  "pollIntervalSec": 300,
+  "warnPercent": 60,
+  "criticalPercent": 85,
+  "colorMode": "provider-severity",
+  "enabledProviders": [],
+  "disabledProviders": [],
+  "targets": {}
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `align` | `"right"` | Anchor the card right or left |
+| `visible` | `true` | Whether it starts shown |
+| `pollIntervalSec` | `300` | Active-poll interval, floored at 30s |
+| `warnPercent` | `60` | Percent used at which a bar turns yellow |
+| `criticalPercent` | `85` | Percent used at which a bar turns red |
+| `colorMode` | `"provider-severity"` | Trust a provider's own severity, or use pure thresholds |
+| `enabledProviders` | `[]` | Allow-list; empty means all |
+| `disabledProviders` | `[]` | Deny-list, applied after the allow-list |
+| `targets` | `{}` | Provider-specific selection, e.g. a Fireworks account |
+
+A missing or malformed file falls back to defaults rather than failing, and unknown
+keys are preserved when the extension saves a change.
+
+## Adding a provider
+
+Adding one is a single file plus one line. Create
+`src/providers/<id>.ts` exporting a `ProviderAdapter`:
+
+```ts
+import type { AdapterResult, ProviderAdapter } from "../types.js";
+import { clampPercent, asNumber, asObject, fetchJson } from "../fetch-json.js";
+
+export const exampleAdapter: ProviderAdapter = {
+  // Must match pi's provider id exactly — this is how the adapter is found.
+  id: "example",
+  displayName: "Example",
+  // Your credential is only ever sent here. A user whose base URL does not match
+  // is reported as unavailable instead of having their credential forwarded.
+  officialOrigins: ["https://api.example.com"],
+  authStyle: "bearer",
+
+  async query(credential, ctx): Promise<AdapterResult> {
+    const payload = asObject(
+      await fetchJson("https://api.example.com/usage", {
+        headers: credential.headers,
+        secrets: credential.secrets,
+        signal: ctx.signal,
+        label: "Example usage endpoint",
+      }),
+    );
+
+    const used = asNumber(payload?.used_percent);
+    if (used === undefined) {
+      return { status: "unavailable", configured: true, reason: "no usage data in response" };
+    }
+
+    return {
+      status: "ok",
+      windows: [{ label: "5h", usedPercent: clampPercent(used) }],
+      metrics: [],
+    };
+  },
+};
+```
+
+Then register it in `src/providers/index.ts`:
+
+```ts
+export const ADAPTERS: readonly ProviderAdapter[] = [
+  // ...
+  exampleAdapter,
+];
+```
+
+Nothing else needs to change. The core never names a provider.
+
+### Adapter rules
+
+- **Never throw for provider-side problems.** Return
+  `{ status: "unavailable", configured: true, reason }`. Throw only for bugs.
+- **Use `configured: false`** when the user simply has no credential. That hides the
+  provider instead of showing a permanent error.
+- **Never put a secret in `reason`.** Pass it via `credential.secrets` so
+  `fetchJson` can scrub it from error messages.
+- **Return `undefined` from `fromResponseHeaders`** when a response carries nothing
+  usable — that is normal, not a failure.
+- **Read numbers with `asNumber`**, which accepts numeric strings; providers are
+  inconsistent about this.
+
+### Passive capture
+
+If a provider reports quota in the headers of ordinary inference responses, implement
+`fromResponseHeaders` instead of (or as well as) `query`. It costs no extra request
+and updates as the user works. `src/providers/anthropic.ts` is the reference.
+
+## Development
+
+```bash
+npm test
+```
+
+The suite runs on plain Node with no test dependencies. It resolves TypeScript's
+`.js`-style relative imports through a small hook in `test/` so that
+`npm test` works immediately after a clone.
 
 ## Design notes
 
 - **Why a widget and not a floating overlay?** `tui.showOverlay(..., {
-  nonCapturing: true })` would allow a true free-floating corner panel, but it is
-  undocumented and Pi marks overlays as experimental. A focus-handling mistake
-  there can steal keyboard input from the editor. `ctx.ui.setWidget()` is the
-  stable, documented API and can never capture input. The card is right-aligned
-  to approximate the corner placement without that risk.
-- **Why only four providers?** These are exactly the ones authenticated on the
-  target machine. Adding another is one file under `src/providers/` plus one
-  line in `ALL_PROVIDER_IDS`.
-- **Security.** Credentials come from Pi's own
-  `ctx.modelRegistry.getProviderAuth(id)` and are validated against each
-  provider's single official origin before any request; a custom/proxy base URL
-  for that provider id causes the row to be reported unavailable rather than
-  having its credential forwarded elsewhere. Requests reject redirects, are
-  bounded in size, time out, and are never logged.
+  nonCapturing: true })` would allow a true free-floating panel, but it is
+  undocumented and pi marks overlays as experimental. A focus mistake there can steal
+  keyboard input from the editor. `ctx.ui.setWidget()` is the stable, documented API
+  and can never capture input; the card is right-aligned to approximate corner
+  placement without that risk.
+- **No runtime dependencies.** Width measurement and truncation are implemented
+  locally (`src/ansi.ts`) rather than imported, so installing the package never pulls
+  in anything else.
+- **Stale data is labelled.** A snapshot older than 15 minutes says so, so cached
+  data is never mistaken for live data.
 
-## Persistence
+## Security
 
-Last-known snapshot per provider is cached at
-`~/.pi/agent/subscription-usage.json` so the widget shows real data
-immediately on startup instead of being blank until the first refresh
-completes.
+- Credentials come from pi's own `ctx.modelRegistry.getProviderAuth()` and are
+  validated against the adapter's `officialOrigins` before any request. A provider
+  pointed at a custom or proxied base URL is reported as unavailable rather than
+  having its credential forwarded elsewhere.
+- Requests refuse redirects, are size-bounded, time out, and carry no secret in any
+  error message.
+- Credentials are never logged, cached, or written to the session.
+- Like every pi extension, this package runs with your user's privileges. Read the
+  source before installing anything that does.
 
-## Scope
+## License
 
-Out of scope by design (kept in `@narumitw/pi-usage` if you still want them):
-Fireworks, Baseten, DeepSeek, MiniMax, Moonshot, GitHub Copilot, Kimi, Z.AI,
-xAI, Vercel AI Gateway usage, and the Codex Fast-mode `/fast` toggle. This
-extension covers exactly the subscriptions this machine actually
-authenticates with.
+MIT. See [LICENSE](LICENSE).

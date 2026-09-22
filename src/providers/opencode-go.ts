@@ -1,13 +1,14 @@
-// OpenCode Go (OpenCode Zen plan) — active poll.
-// Endpoint contract verified against @narumitw/pi-usage src/query.ts +
-// src/providers/opencode-zen.ts: Bearer GET, JSON body with
-// usage.{rolling,weekly,monthly}.{status,percent,resetsAt}.
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveBearerToken } from "../auth.js";
-import { fetchAuthedJson } from "../fetch-json.js";
-import type { ProviderSnapshot, UsageWindow } from "../types.js";
+// OpenCode Go (OpenCode Zen plan).
+//
+// Endpoint contract cross-checked against @narumitw/pi-usage (MIT) before it was
+// uninstalled: a Bearer GET returning
+//   usage.{rolling,weekly,monthly}.{status, percent, resetsAt}
+// where percent is already 0..100 and `status` gates whether the window is usable
+// ("ok" | "rate-limited"). Unknown statuses are reported rather than guessed at.
+import type { AdapterResult, ProviderAdapter, UsageWindow } from "../types.js";
+import { asNumber, asObject, asString, clampPercent, fetchJson } from "../fetch-json.js";
 
-const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 
 const WINDOWS = [
   { key: "rolling", label: "rolling" },
@@ -15,43 +16,52 @@ const WINDOWS = [
   { key: "monthly", label: "mo" },
 ] as const;
 
-interface ZenWindow {
-  status?: string;
-  percent?: number;
-  resetsAt?: string;
-}
-interface ZenPayload {
-  usage?: Record<string, ZenWindow>;
-}
+function toWindow(label: string, raw: unknown): UsageWindow | undefined {
+  const window = asObject(raw);
+  if (!window) return undefined;
 
-function toWindow(label: string, raw: ZenWindow | undefined): UsageWindow | undefined {
-  if (!raw || (raw.status !== "ok" && raw.status !== "rate-limited") || typeof raw.percent !== "number") {
-    return undefined;
-  }
-  const resetsAtSec = raw.resetsAt ? Math.floor(Date.parse(raw.resetsAt) / 1000) : undefined;
+  const status = asString(window.status);
+  if (status !== "ok" && status !== "rate-limited") return undefined;
+
+  const used = asNumber(window.percent);
+  if (used === undefined) return undefined;
+
+  const resetsAt = asString(window.resetsAt);
+  const resetsAtSec = resetsAt === undefined ? undefined : Math.floor(Date.parse(resetsAt) / 1000);
+
   return {
     label,
-    usedPercent: Math.max(0, Math.min(100, raw.percent)),
+    usedPercent: clampPercent(used),
     ...(resetsAtSec !== undefined && Number.isFinite(resetsAtSec) ? { resetsAtSec } : {}),
+    ...(status === "rate-limited" ? { severity: "critical" } : {}),
   };
 }
 
-export async function fetchOpenCodeGoSnapshot(ctx: ExtensionContext): Promise<ProviderSnapshot> {
-  const base = { providerId: "opencode-go" as const, displayName: "OC Go", capturedAt: Date.now() };
-  const token = await resolveBearerToken(ctx, "opencode-go");
-  if (!token) {
-    return { ...base, status: "unavailable", reason: "no active OpenCode Go credential", windows: [], metrics: [] };
-  }
-  try {
-    const payload = (await fetchAuthedJson(OPENCODE_GO_USAGE_URL, token)) as ZenPayload;
-    const windows = WINDOWS.map((w) => toWindow(w.label, payload.usage?.[w.key])).filter(
-      (w): w is UsageWindow => w !== undefined,
+export const openCodeGoAdapter: ProviderAdapter = {
+  id: "opencode-go",
+  displayName: "OC Go",
+  officialOrigins: ["https://opencode.ai"],
+  authStyle: "bearer",
+
+  async query(credential, ctx): Promise<AdapterResult> {
+    const payload = asObject(
+      await fetchJson(USAGE_URL, {
+        headers: credential.headers,
+        secrets: credential.secrets,
+        signal: ctx.signal,
+        label: "OpenCode Zen usage endpoint",
+      }),
     );
+    const usage = asObject(payload?.usage);
+    if (!usage) return { status: "unavailable", configured: true, reason: "malformed response" };
+
+    const windows = WINDOWS.map((entry) => toWindow(entry.label, usage[entry.key])).filter(
+      (window): window is UsageWindow => window !== undefined,
+    );
+
     if (windows.length === 0) {
-      return { ...base, status: "unavailable", reason: "no usage data in response", windows: [], metrics: [] };
+      return { status: "unavailable", configured: true, reason: "no usage data in response" };
     }
-    return { ...base, status: "ok", windows, metrics: [] };
-  } catch (err) {
-    return { ...base, status: "unavailable", reason: err instanceof Error ? err.message : String(err), windows: [], metrics: [] };
-  }
-}
+    return { status: "ok", windows, metrics: [] };
+  },
+};

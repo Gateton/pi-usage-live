@@ -1,12 +1,50 @@
 {
   "name": "pi-subscription-usage",
   "version": "0.1.0",
-  "description": "Live subscription usage widget for Pi (Claude Max/Pro, ChatGPT Codex, OpenCode Go, OpenRouter) — jcode-style always-on widget",
-  "private": true,
+  "description": "Always-on subscription usage card for pi: see how much of your Claude, ChatGPT Codex, OpenCode Zen, OpenRouter and other plan allowances you have left, without asking.",
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "usage",
+    "quota",
+    "rate-limit",
+    "subscription",
+    "claude",
+    "codex",
+    "openrouter",
+    "tui"
+  ],
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "pi": {
     "extensions": ["./src/index.ts"]
   },
-  "dependencies": {},
-  "license": "MIT"
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --experimental-transform-types --import ./test/setup.mjs --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage/issues"
+  },
+  "homepage": "https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/pi-subscription-usage#readme"
 }

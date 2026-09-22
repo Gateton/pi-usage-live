@@ -1,51 +1,56 @@
-// OpenAI Codex (ChatGPT subscription) — active poll.
-// Endpoint contract verified against @narumitw/pi-usage (already installed on this
-// machine) src/query.ts + src/providers/codex.ts: simple Bearer GET, JSON body with
-// rate_limit.primary_window / secondary_window, each { used_percent, reset_at, limit_window_seconds }.
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveBearerToken } from "../auth.js";
-import { fetchAuthedJson } from "../fetch-json.js";
-import type { ProviderSnapshot, UsageWindow } from "../types.js";
+// OpenAI Codex (ChatGPT consumer subscription).
+//
+// Endpoint contract cross-checked against @narumitw/pi-usage (MIT) before it was
+// uninstalled: a Bearer GET returning
+//   rate_limit.{primary_window,secondary_window}.{used_percent, reset_at, limit_window_seconds}
+// where used_percent is already 0..100.
+import type { AdapterResult, ProviderAdapter, UsageWindow } from "../types.js";
+import { asNumber, asObject, asString, clampPercent, fetchJson } from "../fetch-json.js";
 
-const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 
-interface RateWindow {
-  used_percent?: number;
-  reset_at?: number;
-  limit_window_seconds?: number;
-}
-interface CodexPayload {
-  rate_limit?: { primary_window?: RateWindow; secondary_window?: RateWindow };
-  plan_type?: string;
-}
-
-function toWindow(label: string, raw: RateWindow | undefined): UsageWindow | undefined {
-  if (!raw || typeof raw.used_percent !== "number") return undefined;
+function toWindow(label: string, raw: unknown): UsageWindow | undefined {
+  const window = asObject(raw);
+  if (!window) return undefined;
+  const used = asNumber(window.used_percent);
+  if (used === undefined) return undefined;
+  const resetsAt = asNumber(window.reset_at);
   return {
     label,
-    usedPercent: Math.max(0, Math.min(100, raw.used_percent)),
-    ...(typeof raw.reset_at === "number" ? { resetsAtSec: raw.reset_at } : {}),
+    usedPercent: clampPercent(used),
+    ...(resetsAt !== undefined ? { resetsAtSec: resetsAt } : {}),
   };
 }
 
-export async function fetchOpenaiCodexSnapshot(ctx: ExtensionContext): Promise<ProviderSnapshot> {
-  const base = { providerId: "openai-codex" as const, displayName: "Codex", capturedAt: Date.now() };
-  const token = await resolveBearerToken(ctx, "openai-codex");
-  if (!token) {
-    return { ...base, status: "unavailable", reason: "no active ChatGPT credential", windows: [], metrics: [] };
-  }
-  try {
-    const payload = (await fetchAuthedJson(CODEX_USAGE_URL, token)) as CodexPayload;
+export const openaiCodexAdapter: ProviderAdapter = {
+  id: "openai-codex",
+  displayName: "Codex",
+  officialOrigins: ["https://chatgpt.com"],
+  authStyle: "bearer",
+
+  async query(credential, ctx): Promise<AdapterResult> {
+    const payload = asObject(
+      await fetchJson(USAGE_URL, {
+        headers: credential.headers,
+        secrets: credential.secrets,
+        signal: ctx.signal,
+        label: "Codex usage endpoint",
+      }),
+    );
+    if (!payload) return { status: "unavailable", configured: true, reason: "malformed response" };
+
+    const rateLimit = asObject(payload.rate_limit);
     const windows = [
-      toWindow("5h", payload.rate_limit?.primary_window),
-      toWindow("7d", payload.rate_limit?.secondary_window),
-    ].filter((w): w is UsageWindow => w !== undefined);
-    const metrics = payload.plan_type ? [{ label: "Plan", value: payload.plan_type }] : [];
+      toWindow("5h", rateLimit?.primary_window),
+      toWindow("7d", rateLimit?.secondary_window),
+    ].filter((window): window is UsageWindow => window !== undefined);
+
+    const plan = asString(payload.plan_type);
+    const metrics = plan ? [{ label: "Plan", value: plan }] : [];
+
     if (windows.length === 0 && metrics.length === 0) {
-      return { ...base, status: "unavailable", reason: "no usage data in response", windows: [], metrics: [] };
+      return { status: "unavailable", configured: true, reason: "no usage data in response" };
     }
-    return { ...base, status: "ok", windows, metrics };
-  } catch (err) {
-    return { ...base, status: "unavailable", reason: err instanceof Error ? err.message : String(err), windows: [], metrics: [] };
-  }
-}
+    return { status: "ok", windows, metrics };
+  },
+};

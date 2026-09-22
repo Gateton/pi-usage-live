@@ -1,145 +1,181 @@
-// A small, bordered, colored "HUD card" component — this is what actually gets
-// rendered on screen above the editor. Implements the plain Component interface
-// (render(width): string[]) so it never steals focus from the editor.
+// The bordered HUD card actually drawn above the editor.
+//
+// Implements the plain Component interface (render(width): string[]) so it never
+// takes focus from the editor, and knows nothing about any specific provider: it
+// draws whatever snapshots the state hands it.
+//
+// Width contract: pi requires every line to fit the width it passes. A line that
+// overflows corrupts the entire frame, not just its own row, so the card shrinks its
+// inner width to whatever is available and truncates content to fit. Below a floor
+// where nothing useful can be drawn it renders nothing at all, which is preferable
+// to drawing a broken frame.
 //
 // The theme is read through a getter on every render rather than captured, because
-// Pi caches the component returned by setWidget() and only calls invalidate() on a
-// theme change — a captured Theme would go stale after /settings switches themes.
+// pi caches the component returned by setWidget() and only calls invalidate() on a
+// theme change — a captured theme would stay stale after /settings.
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { fitToWidth } from "./ansi.js";
+import type { ExtensionConfig } from "./config.js";
 import type { ProviderSnapshot, UsageWindow } from "./types.js";
 import { renderBar } from "./widget.js";
 
-const CARD_WIDTH = 30; // inner content width; borders add 2 more columns
-const CARD_TOTAL_WIDTH = CARD_WIDTH + 2;
-/** Right margin so the card doesn't touch the terminal edge; also the minimum gap
- *  required on the left before we allow right-alignment at all. */
+/** Width the card uses when there is room: fits the widest realistic window line. */
+const PREFERRED_INNER_WIDTH = 38;
+/** Below this there is no point drawing a card; render nothing instead. */
+const MIN_INNER_WIDTH = 8;
+/** Right margin, and the minimum left gap required before right-aligning. */
 const ALIGN_GAP = 2;
+/** Past this age a snapshot is labelled, so stale data is never passed off as live. */
+const STALE_AFTER_MS = 15 * 60_000;
 
-export type CardAlign = "left" | "right";
+type Colorize = (text: string) => string;
 
-function colorForPercent(theme: Theme, percent: number): (s: string) => string {
-  if (percent >= 85) return (s: string) => theme.fg("error", s);
-  if (percent >= 60) return (s: string) => theme.fg("warning", s);
-  return (s: string) => theme.fg("success", s);
+function colorFor(theme: Theme, window: UsageWindow, percent: number, config: ExtensionConfig): Colorize {
+  // A provider reporting "critical" knows something thresholds do not, so prefer its
+  // judgement unless the user explicitly asked for pure thresholds.
+  if (config.colorMode === "provider-severity" && window.severity !== undefined) {
+    const severity = window.severity.toLowerCase();
+    if (severity === "critical" || severity === "error" || severity === "exceeded") {
+      return (text) => theme.fg("error", text);
+    }
+    if (severity === "warning" || severity === "warn") {
+      return (text) => theme.fg("warning", text);
+    }
+  }
+  if (percent >= config.criticalPercent) return (text) => theme.fg("error", text);
+  if (percent >= config.warnPercent) return (text) => theme.fg("warning", text);
+  return (text) => theme.fg("success", text);
 }
 
-function pad(s: string, width: number): string {
-  // theme.fg() wraps text in ANSI codes; measure/pad against the raw text length instead.
-  const visibleLen = stripAnsi(s).length;
-  return s + " ".repeat(Math.max(0, width - visibleLen));
+function formatCountdown(resetsAtSec: number | undefined, nowSec: number): string {
+  if (resetsAtSec === undefined) return "";
+  const delta = resetsAtSec - nowSec;
+  if (delta <= 0) return " (reset due)";
+  const days = Math.floor(delta / 86_400);
+  const hours = Math.floor((delta % 86_400) / 3_600);
+  const minutes = Math.floor((delta % 3_600) / 60);
+  if (days > 0) return ` (${days}d${hours}h)`;
+  if (hours > 0) return ` (${hours}h${minutes}m)`;
+  return ` (${minutes}m)`;
 }
 
-function stripAnsi(s: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping needs raw control chars.
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
+/** Human-readable age, or empty while the snapshot is still fresh. */
+export function formatAge(capturedAt: number, nowMs: number): string {
+  const age = nowMs - capturedAt;
+  if (age < STALE_AFTER_MS) return "";
+  const minutes = Math.floor(age / 60_000);
+  if (minutes < 60) return `${minutes}m old`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h old`;
+  return `${Math.floor(hours / 24)}d old`;
 }
 
 /**
- * Pad every line on the left so the card sits in the terminal's bottom-right
- * corner like a HUD panel. Falls back to left-alignment when the terminal is too
- * narrow to fit the card plus a visible gap — a clipped card is worse than a
- * left-aligned one.
+ * Pad every line so the card sits in the terminal's bottom-right corner. Falls back
+ * to left alignment when there is no room for the card plus a visible gap.
  */
-function applyAlign(lines: string[], align: CardAlign, width: number): string[] {
-  if (align === "left") return lines;
-  const leftPad = width - ALIGN_GAP - CARD_TOTAL_WIDTH;
+function applyAlign(lines: string[], align: string, width: number, totalWidth: number): string[] {
+  if (align !== "right") return lines;
+  const leftPad = width - ALIGN_GAP - totalWidth;
   if (leftPad <= 0) return lines;
-  const padStr = " ".repeat(leftPad);
-  return lines.map((line) => padStr + line);
+  const padding = " ".repeat(leftPad);
+  return lines.map((line) => padding + line);
 }
 
 export class UsageCard {
-  private getTheme: () => Theme;
   private snapshots: ProviderSnapshot[] = [];
-  private focusId: ProviderSnapshot["providerId"] | undefined;
-  private expanded = false;
-  private align: CardAlign = "right";
+  private focusId: string | undefined;
+  private expandedAll = false;
 
-  constructor(getTheme: () => Theme) {
-    this.getTheme = getTheme;
-  }
+  constructor(
+    private readonly getTheme: () => Theme,
+    private readonly getConfig: () => ExtensionConfig,
+  ) {}
 
-  update(snapshots: ProviderSnapshot[], focusId: ProviderSnapshot["providerId"] | undefined, expanded: boolean): void {
+  update(snapshots: ProviderSnapshot[], focusId: string | undefined, expandedAll: boolean): void {
     this.snapshots = snapshots;
     this.focusId = focusId;
-    this.expanded = expanded;
-  }
-
-  setAlign(align: CardAlign): void {
-    this.align = align;
-  }
-  getAlign(): CardAlign {
-    return this.align;
+    this.expandedAll = expandedAll;
   }
 
   invalidate(): void {
-    // Nothing cached beyond the snapshots, and the theme is read live in render().
+    // Nothing is cached beyond the snapshots; the theme and config are read live.
   }
 
   render(width: number): string[] {
+    // Shrink to the space actually available: never assume PREFERRED_INNER_WIDTH fits.
+    const inner = Math.min(PREFERRED_INNER_WIDTH, width - 2);
+    if (inner < MIN_INNER_WIDTH) return [];
+
     const theme = this.getTheme();
-    const border = (s: string) => theme.fg("border", s);
-    const dim = (s: string) => theme.fg("dim", s);
-    const accent = (s: string) => theme.fg("accent", s);
+    const config = this.getConfig();
+    const border = (text: string) => theme.fg("border", text);
+    const dim = (text: string) => theme.fg("dim", text);
+    const rule = (left: string, right: string) => border(`${left}${"─".repeat(inner)}${right}`);
+    const row = (text: string) => `${border("│")}${fitToWidth(text, inner)}${border("│")}`;
 
-    const shown = this.expanded
-      ? this.snapshots
-      : this.snapshots.filter((s) => s.providerId === this.focusId).slice(0, 1);
-    const list = shown.length > 0 ? shown : this.snapshots.slice(0, 1);
+    // Focused mode shows only the provider backing the current model, mirroring how
+    // jcode keeps the card tied to what you are actually using. When that provider
+    // isn't tracked (or nothing is focused), fall back to listing everything.
+    const focused = this.expandedAll
+      ? []
+      : this.snapshots.filter((snapshot) => snapshot.providerId === this.focusId);
+    const list = focused.length > 0 ? focused : this.snapshots;
 
-    const lines: string[] = [];
-    lines.push(border(`╭${"─".repeat(CARD_WIDTH)}╮`));
+    const lines: string[] = [rule("╭", "╮")];
+    const now = Date.now();
 
-    list.forEach((snapshot, idx) => {
-      if (idx > 0) lines.push(border(`├${"─".repeat(CARD_WIDTH)}┤`));
-      const title = ` ${theme.bold(accent(snapshot.displayName))}`;
-      lines.push(`${border("│")}${pad(title, CARD_WIDTH)}${border("│")}`);
+    list.forEach((snapshot, index) => {
+      if (index > 0) lines.push(rule("├", "┤"));
+
+      const age = formatAge(snapshot.capturedAt, now);
+      const title = ` ${theme.bold(theme.fg("accent", snapshot.displayName))}`;
+      lines.push(row(age === "" ? title : `${title} ${dim(age)}`));
 
       if (snapshot.status !== "ok") {
-        const text = ` ${dim(`unavailable${snapshot.reason ? ` — ${snapshot.reason}` : ""}`)}`;
-        lines.push(`${border("│")}${pad(text, CARD_WIDTH)}${border("│")}`);
+        lines.push(row(` ${dim(snapshot.reason ?? "unavailable")}`));
         return;
       }
 
-      // Align bars across a snapshot's windows: "rolling" vs "wk" would otherwise
-      // push the bar sideways and make the card look ragged.
-      const labelWidth = Math.max(3, ...snapshot.windows.map((w) => w.label.length));
-      for (const w of snapshot.windows) lines.push(...this.windowLines(w, labelWidth, border, dim));
-      for (const m of snapshot.metrics) {
-        const text = ` ${theme.bold(m.value)} ${dim(m.label)}`;
-        lines.push(`${border("│")}${pad(text, CARD_WIDTH)}${border("│")}`);
+      // Align bars across a provider's windows, so a long label like "rolling" does
+      // not push its bar out of line with its neighbours.
+      const labelWidth = Math.max(3, ...snapshot.windows.map((window) => window.label.length));
+      for (const window of snapshot.windows) {
+        lines.push(row(this.windowLine(window, labelWidth, config, dim)));
+      }
+      for (const metric of snapshot.metrics) {
+        lines.push(row(` ${theme.bold(metric.value)} ${dim(metric.label)}`));
       }
       if (snapshot.windows.length === 0 && snapshot.metrics.length === 0) {
-        lines.push(`${border("│")}${pad(dim(" no data"), CARD_WIDTH)}${border("│")}`);
+        lines.push(row(dim(" no data")));
       }
     });
 
-    if (!this.expanded && this.snapshots.length > 1) {
-      const hint = ` ${dim(`+${this.snapshots.length - 1} more · /usage all`)}`;
-      lines.push(border(`├${"─".repeat(CARD_WIDTH)}┤`));
-      lines.push(`${border("│")}${pad(hint, CARD_WIDTH)}${border("│")}`);
+    // Only worth offering the hint when something is actually hidden.
+    if (focused.length > 0 && this.snapshots.length > 1) {
+      lines.push(rule("├", "┤"));
+      lines.push(row(` ${dim(`${this.snapshots.length} providers · /usage all`)}`));
     }
 
-    lines.push(border(`╰${`─`.repeat(CARD_WIDTH)}╯`));
-    return applyAlign(lines, this.align, width);
+    lines.push(rule("╰", "╯"));
+    return applyAlign(lines, config.align, width, inner + 2);
   }
 
-  private windowLines(
-    w: UsageWindow,
+  private windowLine(
+    window: UsageWindow,
     labelWidth: number,
-    border: (s: string) => string,
-    dim: (s: string) => string,
-  ): string[] {
-    const pct = w.usedPercent !== undefined ? Math.round(w.usedPercent) : undefined;
-    if (pct === undefined) {
-      const text = ` ${dim(`${w.label}: n/a`)}`;
-      return [`${border("│")}${pad(text, CARD_WIDTH)}${border("│")}`];
+    config: ExtensionConfig,
+    dim: (text: string) => string,
+  ): string {
+    const label = dim(window.label.padEnd(labelWidth, " "));
+
+    if (window.usedPercent === undefined) {
+      return ` ${label} ${dim("n/a")}`;
     }
-    const color = colorForPercent(this.getTheme(), pct);
-    const bar = color(renderBar(pct));
-    const pctText = color(`${String(pct).padStart(3, " ")}%`);
-    const label = dim(w.label.padEnd(labelWidth, " "));
-    const text = ` ${label} ${bar} ${pctText}`;
-    return [`${border("│")}${pad(text, CARD_WIDTH)}${border("│")}`];
+
+    const percent = Math.round(window.usedPercent);
+    const color = colorFor(this.getTheme(), window, percent, config);
+    const countdown = formatCountdown(window.resetsAtSec, Math.floor(Date.now() / 1000));
+    return ` ${label} ${color(renderBar(percent))} ${color(`${String(percent).padStart(3, " ")}%`)}${dim(countdown)}`;
   }
 }
