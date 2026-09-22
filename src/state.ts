@@ -3,7 +3,7 @@
 // and re-renders the widget. One instance per session.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadCache, persistSnapshot } from "./cache.js";
-import { formatSnapshotLines } from "./widget.js";
+import { UsageCard, type CardAlign } from "./card.js";
 import { ALL_PROVIDER_IDS, type ProviderSnapshot } from "./types.js";
 
 const WIDGET_ID = "subscription-usage";
@@ -16,6 +16,9 @@ export class UsageState {
   private current = new Map<ProviderSnapshot["providerId"], ProviderSnapshot>();
   private everSucceeded = new Set<ProviderSnapshot["providerId"]>();
   private visible = true;
+  private expanded = false;
+  private align: CardAlign = "right";
+  private card: UsageCard | undefined;
 
   async loadFromDisk(): Promise<void> {
     const cache = await loadCache();
@@ -33,6 +36,18 @@ export class UsageState {
   }
   isVisible(): boolean {
     return this.visible;
+  }
+  setExpanded(v: boolean): void {
+    this.expanded = v;
+  }
+  isExpanded(): boolean {
+    return this.expanded;
+  }
+  setAlign(align: CardAlign): void {
+    this.align = align;
+  }
+  getAlign(): CardAlign {
+    return this.align;
   }
 
   /** Ingest one fresh snapshot. Skips providers that were never configured and still aren't. */
@@ -61,7 +76,18 @@ export class UsageState {
       ctx.ui.setWidget(WIDGET_ID, undefined);
       return;
     }
-    const lines = formatSnapshotLines(snaps);
-    ctx.ui.setWidget(WIDGET_ID, lines, { placement: "aboveEditor" });
+    // setWidget caches the component we return and only calls invalidate() on a theme
+    // change, so the card reads ctx.ui.theme lazily at render time instead of capturing
+    // it once — otherwise it would keep painting with a stale theme after /settings.
+    ctx.ui.setWidget(
+      WIDGET_ID,
+      () => {
+        if (!this.card) this.card = new UsageCard(() => ctx.ui.theme);
+        this.card.setAlign(this.align);
+        this.card.update(snaps, ctx.model?.provider as ProviderSnapshot["providerId"] | undefined, this.expanded);
+        return this.card;
+      },
+      { placement: "aboveEditor" },
+    );
   }
 }

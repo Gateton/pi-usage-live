@@ -1,16 +1,43 @@
 # pi-subscription-usage
 
 A jcode-style **always-on** live widget for Pi showing how much of your
-Claude Max/Pro, ChatGPT Codex, OpenCode Go, and OpenRouter quota you've used
-— right above the editor, updated in real time, no `/usage` needed to see it.
+Claude Max/Pro, ChatGPT Codex, OpenCode Go, and OpenRouter quota you've used —
+rendered as a compact bordered HUD card anchored in the **bottom-right corner**
+of the terminal, above the editor.
+
+```
+                                            ╭──────────────────────────────╮
+                                            │ Claude                       │
+                                            │ 5h  ███████████████ 100%     │
+                                            │ 7d  █░░░░░░░░░░░░░░   8%     │
+                                            ├──────────────────────────────┤
+                                            │ +3 more · /usage all         │
+                                            ╰──────────────────────────────╯
+```
+
+By default it shows **only the provider backing your current model**, like
+jcode. `/usage all` expands it into a full panel with all configured providers.
 
 ## Why
 
 Pi's built-in footer already shows token/cache/cost/context usage per session.
 What it doesn't show is **subscription-window quota** (Claude's rolling 5h/7d
 allowance, Codex's ChatGPT rate-limit windows, etc.) — the same thing `jcode
-usage` reports. This extension fills that gap as a persistent widget instead
+usage` reports. This extension fills that gap as a persistent card instead
 of a one-shot command.
+
+## Visual design
+
+- Bordered box (`╭─╮ │ ╰─╯`) that reads as a HUD panel, not raw log lines.
+- 15-cell gradient bar per quota window, colored by severity from the active
+theme: **green** < 60%, **yellow** 60–84%, **red** ≥ 85%.
+- Window labels aligned per provider, so `rolling` / `wk` / `mo` bars line up.
+- Reset countdowns in human units (`3h25m`, `6d7h`), never `151h24m`.
+- Right-aligned to the terminal's bottom-right corner, with an automatic
+fallback to left alignment when the terminal is too narrow to fit the card
+plus a visible gap (a clipped card would be worse than a left-aligned one).
+- Theme-aware: colors are read live from `ctx.ui.theme` at render time, so
+switching themes in `/settings` is picked up without a reload.
 
 ## How each provider updates
 
@@ -49,9 +76,33 @@ pi -e ./src/index.ts
 
 ## Commands
 
-- `/usage` — toggle the widget on/off
-- `/usage show` / `/usage hide` — explicit show/hide
-- `/usage refresh` — force an immediate refresh of the active pollers
+| Command | Effect |
+|---|---|
+| `/usage` | Toggle the widget on/off |
+| `/usage show` / `/usage hide` | Explicit show / hide |
+| `/usage all` (or `expand`) | Show every configured provider at once |
+| `/usage compact` (or `collapse`) | Back to just the current model's provider |
+| `/usage align` | Flip between right-corner and left alignment |
+| `/usage align left` / `right` | Set alignment explicitly |
+| `/usage refresh` | Force an immediate refresh of the active pollers |
+
+## Design notes
+
+- **Why a widget and not a floating overlay?** `tui.showOverlay(..., {
+  nonCapturing: true })` would allow a true free-floating corner panel, but it is
+  undocumented and Pi marks overlays as experimental. A focus-handling mistake
+  there can steal keyboard input from the editor. `ctx.ui.setWidget()` is the
+  stable, documented API and can never capture input. The card is right-aligned
+  to approximate the corner placement without that risk.
+- **Why only four providers?** These are exactly the ones authenticated on the
+  target machine. Adding another is one file under `src/providers/` plus one
+  line in `ALL_PROVIDER_IDS`.
+- **Security.** Credentials come from Pi's own
+  `ctx.modelRegistry.getProviderAuth(id)` and are validated against each
+  provider's single official origin before any request; a custom/proxy base URL
+  for that provider id causes the row to be reported unavailable rather than
+  having its credential forwarded elsewhere. Requests reject redirects, are
+  bounded in size, time out, and are never logged.
 
 ## Persistence
 

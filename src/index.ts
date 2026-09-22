@@ -36,14 +36,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Switching models is the moment a stale Codex/OpenCode Go/OpenRouter row is most
-  // likely to be wrong — refresh immediately instead of waiting for the next tick.
+  // likely to be wrong, and it's also what decides which provider the compact card
+  // focuses on — re-render immediately from cache, then refresh in the background.
   pi.on("model_select", async (_event, ctx) => {
     latestCtx = ctx;
+    state.render(ctx);
     poller.refreshNow();
   });
 
   pi.registerCommand("usage", {
-    description: "Toggle the live subscription usage widget or force a refresh",
+    description: "Toggle the live subscription usage widget, expand to all providers, or force a refresh",
     handler: async (args, ctx) => {
       latestCtx = ctx;
       const arg = (args ?? "").trim().toLowerCase();
@@ -57,9 +59,34 @@ export default function (pi: ExtensionAPI) {
         state.render(ctx);
         return;
       }
+      if (arg === "all" || arg === "expand") {
+        state.setVisible(true);
+        state.setExpanded(true);
+        state.render(ctx);
+        return;
+      }
+      if (arg === "compact" || arg === "collapse") {
+        state.setVisible(true);
+        state.setExpanded(false);
+        state.render(ctx);
+        return;
+      }
+      if (arg === "align") {
+        const next = state.getAlign() === "right" ? "left" : "right";
+        state.setAlign(next);
+        state.render(ctx);
+        ctx.ui.notify(`Usage widget aligned ${next}`, "info");
+        return;
+      }
+      if (arg === "align left" || arg === "align right") {
+        const next = arg.endsWith("left") ? "left" : "right";
+        state.setAlign(next);
+        state.render(ctx);
+        return;
+      }
       if (arg === "refresh") {
         poller.refreshNow();
-        ctx.ui.notify("Refreshing subscription usage…", "info");
+        ctx.ui.notify("Refreshing subscription usage...", "info");
         return;
       }
       // No args: toggle visibility (most common case bound to muscle memory from /usage).
