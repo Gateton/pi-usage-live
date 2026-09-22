@@ -1,0 +1,12 @@
+{
+  "name": "pi-subscription-usage",
+  "version": "0.1.0",
+  "description": "Live subscription usage widget for Pi (Claude Max/Pro, ChatGPT Codex, OpenCode Go, OpenRouter) — jcode-style always-on widget",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
