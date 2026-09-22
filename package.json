@@ -1,7 +1,7 @@
 {
   "name": "pi-usage-live",
   "version": "0.1.0",
-  "description": "Always-on subscription usage card for Pi: see how much of your Claude, ChatGPT Codex, OpenCode Zen and OpenRouter allowance you have left, live in your terminal, without asking.",
+  "description": "Always-on subscription usage for Pi: Claude, Codex, DeepSeek, Kimi, MiniMax, Moonshot, Z.AI, OpenRouter and more, live in your terminal as you work.",
   "keywords": [
     "pi",
     "pi-extension",
