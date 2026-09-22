@@ -66,6 +66,18 @@ export class UsageState {
   }
 
   render(ctx: ExtensionContext): void {
+    // Any property read on a ctx invalidated by session replacement/reload throws.
+    // Rendering is best-effort UI work, so a dead ctx just means "nothing to draw" —
+    // it must never propagate into a caller (or into a timer callback, where it would
+    // become an unhandled rejection and kill the process).
+    try {
+      this.renderUnsafe(ctx);
+    } catch {
+      // Session ended mid-render; drop it.
+    }
+  }
+
+  private renderUnsafe(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     if (!this.visible) {
       ctx.ui.setWidget(WIDGET_ID, undefined);

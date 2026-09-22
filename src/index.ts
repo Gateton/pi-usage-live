@@ -18,10 +18,16 @@ export default function (pi: ExtensionAPI) {
     latestCtx = ctx;
     await state.loadFromDisk();
     state.render(ctx);
-    poller.start();
+    // Only run the network pollers when there's actually a UI to draw them into.
+    // Headless runs (`-p`, `--mode json`) are short-lived, gain nothing from a poll,
+    // and their session dies while requests are still in flight.
+    if (ctx.hasUI) poller.start();
   });
 
   pi.on("session_shutdown", async () => {
+    // Drop the ctx first: anything that reads it after this point must no-op rather
+    // than touch an invalidated context.
+    latestCtx = undefined;
     poller.stop();
   });
 
