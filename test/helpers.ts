@@ -1,5 +1,18 @@
 // Shared test helpers.
 
+import assert from "node:assert/strict";
+
+/**
+ * Fetch a rendered line, failing loudly if it is missing. Indexing a `string[]`
+ * yields `string | undefined` under noUncheckedIndexedAccess, and silently
+ * coercing that to "" would hide a card that rendered nothing.
+ */
+export function lineAt(lines: string[], index: number): string {
+  const line = lines[index];
+  assert.ok(line !== undefined, `expected a line at index ${index}, but only ${lines.length} were rendered`);
+  return line;
+}
+
 export interface ThemeCall {
   color: string;
   text: string;

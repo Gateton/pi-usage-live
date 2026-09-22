@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { visibleWidth } from "../src/ansi.js";
 import { UsageCard } from "../src/card.js";
 import { DEFAULT_CONFIG, type ExtensionConfig } from "../src/config.js";
-import { fakeTheme, snapshot } from "./helpers.js";
+import { fakeTheme, lineAt, snapshot } from "./helpers.js";
 
 function card(config: Partial<ExtensionConfig> = {}) {
   const { theme, colorsUsed } = fakeTheme();
@@ -42,11 +42,11 @@ describe("UsageCard", () => {
     subject.update([snapshot({ displayName: "Claude" })], "test-provider", false);
 
     const wide = subject.render(120);
-    assert.ok(wide[0].startsWith(" "), "expected left padding for right alignment");
+    assert.ok(lineAt(wide, 0).startsWith(" "), "expected left padding for right alignment");
 
     const left = card({ align: "left" }).card;
     left.update([snapshot({ displayName: "Claude" })], "test-provider", false);
-    assert.ok(!left.render(120)[0].startsWith(" "), "left alignment should not pad");
+    assert.ok(!lineAt(left.render(120), 0).startsWith(" "), "left alignment should not pad");
   });
 
   test("shows only the focused provider until expanded", () => {
@@ -164,7 +164,7 @@ describe("UsageCard", () => {
     const barColumns = subject
       .render(200)
       .filter((line) => line.includes("█") || line.includes("░"))
-      .map((line) => line.indexOf("█") >= 0 ? line.indexOf("█") : line.indexOf("░"));
+      .map((line) => (line.includes("█") ? line.indexOf("█") : line.indexOf("░")));
 
     assert.equal(new Set(barColumns).size, 1, `bars started at differing columns: ${barColumns.join(",")}`);
   });
@@ -173,8 +173,8 @@ describe("UsageCard", () => {
     const { card: subject } = card();
     subject.update([snapshot({ displayName: "Claude" })], "test-provider", false);
     const lines = subject.render(200);
-    assert.match(lines[0], /^ *╭─+╮$/);
-    assert.match(lines[lines.length - 1], /^ *╰─+╯$/);
+    assert.match(lineAt(lines, 0), /^ *╭─+╮$/);
+    assert.match(lineAt(lines, lines.length - 1), /^ *╰─+╯$/);
     assert.match(lines.join("\n"), /Claude/);
   });
 });

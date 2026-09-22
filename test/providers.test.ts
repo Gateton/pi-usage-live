@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("registry", () => {
   test("exposes the expected adapters", () => {
-    assert.deepEqual(adapterIds().sort(), ["anthropic", "openai-codex", "opencode-go", "openrouter"]);
+    assert.deepEqual([...adapterIds()].sort(), ["anthropic", "openai-codex", "opencode-go", "openrouter"]);
   });
 
   test("every adapter declares the fields the core relies on", () => {
